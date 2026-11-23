@@ -1,0 +1,5 @@
+# Static HTML/CSS/JS site with no build step and no package manager.
+# The site files live in the "church portal" folder, so publish that folder as-is.
+[build]
+  command = ""
+  publish = "church portal"
