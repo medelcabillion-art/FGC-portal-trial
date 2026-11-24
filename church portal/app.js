@@ -1,8 +1,8 @@
-// ===== Fill these in (Supabase > Project Settings > API) =====
+// ===== 1. Fill these in (Supabase > Project Settings > API) =====
 const SUPABASE_URL = 'https://zjmgfrgeeopqxcxvtljm.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_U9LZ7mNy4v5I8w_IWYaTcQ_p89aK_WF';
-const ADMIN_EMAIL = 'medelcabillion@gmail.com'; // email of the admin user you create in Supabase Auth
-// =============================================================
+const ADMIN_EMAIL = 'medelcabillion@gmail.com'; // the email of the admin user you create in Supabase Auth
+// ================================================================
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -14,10 +14,69 @@ const ini = n => n.split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join(''
 const av = (m, c = '') => `<div class="av ${c}">${m.photo ? `<img src="${m.photo}" alt="">` : esc(ini(m.name))}</div>`;
 const nextId = () => 'FGC-' + String(Math.max(0, ...members.map(m => parseInt(m.id.split('-')[1]) || 0)) + 1).padStart(3, '0');
 
+// ---------- other records: Baby Dedication & Water Baptism ----------
+const REC = {
+  dedication: { table: 'baby_dedications', label: 'Baby Dedication', icon: '👶', nameKey: 'child_name', dateKey: 'dedication_date', prefix: 'BD', file: 'FGC-Baby-Dedications',
+    fields: [['child_name', "Child's full name", 'text'], ['birthday', "Child's birthday", 'date'], ['gender', 'Gender', 'gender'], ['father', "Father's name", 'text'], ['mother', "Mother's name", 'text'],
+      ['phone', 'Contact number', 'tel'], ['address', 'Address', 'text'], ['dedication_date', 'Date of dedication', 'date'], ['minister', 'Officiating pastor', 'text'], ['notes', 'Notes', 'text']] },
+  baptism: { table: 'water_baptisms', label: 'Water Baptism', icon: '💧', nameKey: 'name', dateKey: 'baptism_date', prefix: 'WB', file: 'FGC-Water-Baptisms',
+    fields: [['name', 'Full name', 'text'], ['birthday', 'Birthday', 'date'], ['gender', 'Gender', 'gender'], ['phone', 'Contact number', 'tel'], ['address', 'Address', 'text'],
+      ['baptism_date', 'Date of baptism', 'date'], ['minister', 'Officiating pastor', 'text'], ['notes', 'Notes', 'text']] }
+};
+const recs = { dedication: [], baptism: [] }, rq = { dedication: '', baptism: '' }, rsort = { dedication: 'new', baptism: 'new' };
+let rsel = null, rform = null, rconfirm = false, recErr = '';
+async function loadRecs() {
+  recErr = '';
+  for (const k in REC) { const { data, error } = await sb.from(REC[k].table).select('*'); if (error) recErr = error.message + ' (run supabase-records.sql in Supabase first)'; else recs[k] = data; }
+  if (authed && !form && !rform) render();
+}
+sb.channel('recs-live').on('postgres_changes', { event: '*', schema: 'public', table: 'baby_dedications' }, loadRecs)
+  .on('postgres_changes', { event: '*', schema: 'public', table: 'water_baptisms' }, loadRecs).subscribe();
+const rNextId = k => REC[k].prefix + '-' + String(Math.max(0, ...recs[k].map(r => parseInt(r.id.split('-')[1]) || 0)) + 1).padStart(3, '0');
+function rList(k) {
+  const c = REC[k], n = c.nameKey, d = c.dateKey;
+  const l = recs[k].filter(r => (r[n] || '').toLowerCase().includes(rq[k].toLowerCase()));
+  const f = { az: (a, b) => a[n].localeCompare(b[n]), za: (a, b) => b[n].localeCompare(a[n]),
+    new: (a, b) => (b[d] || '').localeCompare(a[d] || ''), old: (a, b) => (a[d] || '').localeCompare(b[d] || '') }[rsort[k]];
+  return l.sort(f).map(r => `<div class="card m" data-rid="${esc(r.id)}"><div class="av">${c.icon}</div><div><h3>${esc(r[n])}</h3><small>${esc(r.id)} · ${fmt(r[d])}${r.minister ? ' · ' + esc(r.minister) : ''}</small></div></div>`).join('')
+    || '<p class="c" style="color:var(--mut)">No records yet. Tap + to add one.</p>';
+}
+const recView = k => { const c = REC[k]; return `<h2>${c.icon} ${c.label}</h2>${recErr ? `<p style="color:#e11d48;font-size:13px">${esc(recErr)}</p>` : ''}
+  <input id="rq" placeholder="🔍 Search by name" value="${esc(rq[k])}"><label>Sort by</label>
+  <select id="rsort"><option value="new">Newest first (date)</option><option value="old">Oldest first (date)</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option></select>
+  <button class="btn alt" id="rword" style="width:100%;margin-top:10px">Export to Word (print)</button>
+  <div style="height:12px"></div><div id="rlist">${rList(k)}</div><button class="btn fab" id="radd" aria-label="Add record">+</button>`; };
+function recSheet(k) {
+  const c = REC[k];
+  if (rform) return `<h2>${rform.isNew ? 'Add' : 'Edit'} ${c.label}</h2>` + c.fields.map(([key, label, type]) => type === 'gender'
+    ? `<label>${label}</label><select id="r_${key}"><option>Female</option><option>Male</option></select>`
+    : `<label>${label}</label><input id="r_${key}" type="${type}" value="${esc(rform[key])}">`).join('')
+    + `<p id="err" style="color:#e11d48;font-size:13px"></p><div class="row"><button class="btn ghost" id="rcancel">Cancel</button><button class="btn" id="rsave">Save</button></div>`;
+  const r = recs[k].find(x => x.id === rsel); if (!r) { rsel = null; return ''; }
+  return `<div class="c"><div class="av lg">${c.icon}</div><h2 style="margin:0">${esc(r[c.nameKey])}</h2><small style="color:var(--mut)">${esc(r.id)}</small></div><div style="height:8px"></div>`
+    + c.fields.slice(1).map(([key, label, type]) => `<div class="kv"><span>${label}</span><b>${esc(type === 'date' ? fmt(r[key]) : (r[key] || '—'))}</b></div>`).join('')
+    + `<div class="row" style="margin-top:14px"><button class="btn ghost" id="rclose">Close</button><button class="btn alt" id="redit">Edit</button><button class="btn del" id="rdel">${rconfirm ? 'Tap to confirm' : 'Remove'}</button></div>`;
+}
+function wordDoc(title, head, rows, file) {
+  const td = v => `<td style="border:1px solid #999;padding:4px">${esc(v ?? '')}</td>`;
+  const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><title>${esc(title)}</title>
+<style>@page Section1{size:841.9pt 595.3pt;mso-page-orientation:landscape;margin:1.5cm}div.Section1{page:Section1}
+body{font-family:Calibri,Arial,sans-serif}h1{color:#087E9B;margin-bottom:0}table{border-collapse:collapse;width:100%;font-size:9pt}th{background:#14B8A6;color:#fff;border:1px solid #999;padding:5px;text-align:left}</style></head>
+<body><div class="Section1"><h1>${esc(title)}</h1><p>Foursquare Gospel Church - Davao City · Printed ${new Date().toLocaleDateString()} · Total records: ${rows.length}</p>
+<table><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(td).join('')}</tr>`).join('')}</tbody></table></div></body></html>`;
+  const url = URL.createObjectURL(new Blob(['\ufeff', html], { type: 'application/msword' }));
+  const a = document.createElement('a'); a.href = url; a.download = file + '.doc';
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function exportRecs(k) {
+  const c = REC[k], l = [...recs[k]].sort((a, b) => (b[c.dateKey] || '').localeCompare(a[c.dateKey] || ''));
+  wordDoc(c.label + ' Records', ['ID', ...c.fields.map(f => f[1])], l.map(r => [r.id, ...c.fields.map(([key, , type]) => type === 'date' ? fmt(r[key]) : r[key])]), c.file);
+}
+
 // ---------- data (Supabase) ----------
 async function load() {
   const { data, error } = await sb.from('members').select('*');
-  if (!error) { members = data; if (authed && !form) render(); }
+  if (!error) { members = data; if (authed && !form && !rform) render(); }
 }
 sb.channel('members-live').on('postgres_changes', {event:'*', schema:'public', table:'members'}, load).subscribe();
 const saveMember = m => sb.from('members').upsert(m);
@@ -52,39 +111,43 @@ const msg = (t, ok) => {
   m.style.transition = 'none'; m.style.opacity = 1;
   m.style.color = ok ? 'var(--deep)' : '#e11d48'; m.textContent = t;
   msgTimer = setTimeout(() => { m.style.transition = 'opacity 1.2s ease'; m.style.opacity = 0; }, 3500); // stays 3.5s, then fades slowly
-};;
+};
 
 // ---------- main render ----------
 function render() {
   if (!authed) return renderAuth();
   $('#sub').textContent = `Welcome, Admin · ${members.length} members · ☁️ synced`;
   $('#nav').classList.remove('hide');
-  $('#nav').innerHTML = [['home','🏠','Home'],['members','👥','Members'],['profile','👤','Profile'],['settings','⚙️','Settings']]
+  $('#nav').innerHTML = [['home','🏠','Home'],['members','👥','Membership'],['dedication','👶','Dedication'],['baptism','💧','Baptism'],['profile','👤','Profile'],['settings','⚙️','Settings']]
     .map(([k,i,l]) => `<button data-v="${k}" class="${view===k?'on':''}"><span>${i}</span>${l}</button>`).join('');
   let h = '';
   if (view === 'home') {
     const a = members.filter(m => m.status === 'Active').length;
     const avg = members.length ? Math.round(members.reduce((s, m) => s + age(m.birthday), 0) / members.length) : 0;
     h = `<div class="stats"><div class="card stat"><b>${members.length}</b><span>Total members</span></div><div class="card stat"><b>${a}</b><span>Active</span></div>
-      <div class="card stat"><b>${members.length - a}</b><span>Inactive / visitors</span></div><div class="card stat"><b>${avg}</b><span>Average age</span></div></div>
+      <div class="card stat"><b>${members.length - a}</b><span>Inactive / visitors</span></div><div class="card stat"><b>${avg}</b><span>Average age</span></div>
+      <div class="card stat"><b>${recs.dedication.length}</b><span>Baby dedications</span></div><div class="card stat"><b>${recs.baptism.length}</b><span>Water baptisms</span></div></div>
       <h2>Newest members</h2>${[...members].sort((a, b) => b.joined.localeCompare(a.joined)).slice(0, 3).map(card).join('')}`;
   }
   if (view === 'members') h = `<input id="q" placeholder="🔍 Search members by name" value="${esc(q)}"><label>Sort by</label>
     <select id="sort"><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="old">Oldest to newest (date joined)</option><option value="young">Youngest to oldest (age)</option></select>
-    <div style="height:12px"></div><div id="list">${listHtml()}</div><button class="btn fab" id="add" aria-label="Add member">+</button>`;
+    <button class="btn alt" id="word" style="width:100%;margin-top:10px">Export to Word (print)</button><div style="height:12px"></div><div id="list">${listHtml()}</div><button class="btn fab" id="add" aria-label="Add member">+</button>`;
   if (view === 'profile') h = `<div class="card c"><div class="av lg">AD</div><h2>Admin</h2><small style="color:var(--mut)">${esc(ADMIN_EMAIL)}</small></div><button class="btn del" id="logout" style="width:100%">Log out</button>`;
   if (view === 'settings') h = `<div class="card"><h2>Change password</h2><label>Current password</label><input id="cp0" type="password">
     <label>New password (min 6)</label><input id="cp1" type="password"><label>Confirm new password</label><input id="cp2" type="password">
     <p id="cpm" style="font-size:13px;min-height:18px"></p><button class="btn" id="chg" style="width:100%">Update password</button></div>
     <div class="card"><button class="btn" id="word" style="width:100%">Export all members to Word (print)</button><div style="height:8px"></div><button class="btn alt" id="exp" style="width:100%">Download members (JSON)</button></div>`;
+  if (REC[view]) h = recView(view);
   $('#app').innerHTML = h;
   if (view === 'members') $('#sort').value = sort;
+  if (REC[view]) $('#rsort').value = rsort[view];
   renderSheet();
 }
 
 function renderSheet() {
   $('#sheet')?.remove(); let c = '';
-  if (form) { const m = form;
+  if (REC[view] && (rform || rsel)) c = recSheet(view);
+  else if (form) { const m = form;
     c = `<h2>${m.isNew ? 'Add member' : 'Edit member'}</h2><div class="c"><div id="ph">${av(m, 'lg')}</div><input type="file" id="photo" accept="image/*"></div>
     <label>Full name</label><input id="f_name" value="${esc(m.name)}">
     <div class="row"><div><label>Birthday</label><input type="date" id="f_birthday" value="${m.birthday}"></div><div><label>Gender</label><select id="f_gender"><option>Female</option><option>Male</option></select></div></div>
@@ -99,9 +162,9 @@ function renderSheet() {
   if (!c) return;
   const d = document.createElement('div'); d.className = 'sheet'; d.id = 'sheet'; d.innerHTML = '<div>' + c + '</div>'; document.body.appendChild(d);
   if (form) { $('#f_gender').value = form.gender; $('#f_status').value = form.status; }
+  if (rform && REC[view]) REC[view].fields.forEach(([key, , type]) => { if (type === 'gender') $('#r_' + key).value = rform[key] || 'Female'; });
 }
 
-// ---------- export to Word ----------
 function exportWord() {
   const list = [...members].sort((a, b) => a.name.localeCompare(b.name));
   const td = v => `<td style="border:1px solid #999;padding:4px">${esc(v)}</td>`;
@@ -117,7 +180,6 @@ body{font-family:Calibri,Arial,sans-serif}h1{color:#087E9B}table{border-collapse
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-
 // ---------- smooth page switch ----------
 let goTimer;
 function go(v) {
@@ -126,7 +188,7 @@ function go(v) {
   const app = $('#app'); clearTimeout(goTimer);
   app.classList.remove('enter'); app.classList.add('leave');
   goTimer = setTimeout(() => {
-    view = v; sel = form = null; render(); scrollTo(0, 0);
+    view = v; sel = form = rsel = rform = null; render(); scrollTo(0, 0);
     app.classList.remove('leave'); app.classList.add('enter');
     goTimer = setTimeout(() => app.classList.remove('enter'), 400);
   }, 160);
@@ -135,9 +197,9 @@ function go(v) {
 // ---------- events ----------
 document.addEventListener('click', async e => {
   const t = e.target, id = t.id;
-  const nv = t.closest('[data-v]'); if (nv) { view = nv.dataset.v; sel = form = null; render(); scrollTo(0, 0); return; }
+  const nv = t.closest('[data-v]'); if (nv) { go(nv.dataset.v); return; }
   const cd = t.closest('.m[data-id]'); if (cd) { sel = cd.dataset.id; confirmDel = false; renderSheet(); return; }
-  if (id === 'sheet' || id === 'close') { sel = form = null; confirmDel = false; renderSheet(); }
+  if (id === 'sheet' || id === 'close' || id === 'rclose') { sel = form = rsel = rform = null; rconfirm = false; confirmDel = false; renderSheet(); }
   if (id === 'login') {
     if ($('#lu').value.trim() !== 'Admin') return msg('Incorrect username or password.');
     const { error } = await sb.auth.signInWithPassword({ email: ADMIN_EMAIL, password: $('#lp').value });
@@ -176,12 +238,33 @@ document.addEventListener('change', e => { const t = e.target;
     const c = document.createElement('canvas'), s = Math.min(1, 160 / Math.max(im.width, im.height)); c.width = im.width * s; c.height = im.height * s;
     c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); form.photo = c.toDataURL('image/jpeg', .8); $('#ph').innerHTML = av(form, 'lg'); }; im.src = r.result; }; r.readAsDataURL(t.files[0]); } });
 
+// ---------- records events ----------
+document.addEventListener('click', async e => {
+  const t = e.target, id = t.id, k = view, c = REC[k];
+  const cd = t.closest('.m[data-rid]'); if (cd) { rsel = cd.dataset.rid; rconfirm = false; renderSheet(); return; }
+  if (!c) return;
+  if (id === 'radd') { rform = { isNew: true, id: rNextId(k), [c.dateKey]: new Date().toISOString().slice(0, 10) }; renderSheet(); }
+  if (id === 'redit') { rform = { ...recs[k].find(r => r.id === rsel) }; rsel = null; renderSheet(); }
+  if (id === 'rcancel') { rform = null; renderSheet(); }
+  if (id === 'rdel') { if (!rconfirm) { rconfirm = true; t.textContent = 'Tap to confirm'; return; }
+    await sb.from(c.table).delete().eq('id', rsel); rsel = null; rconfirm = false; await loadRecs(); render(); }
+  if (id === 'rsave') { const r = { ...rform }, er = $('#err'); delete r.isNew;
+    c.fields.forEach(([key, , type]) => { const v = $('#r_' + key).value.trim(); r[key] = type === 'date' ? (v || null) : v; });
+    if (!r[c.nameKey]) return er.textContent = 'Please enter a name.';
+    if (!r[c.dateKey]) return er.textContent = 'Please enter the date.';
+    const { error } = await sb.from(c.table).upsert(r); if (error) return er.textContent = error.message;
+    rform = null; await loadRecs(); render(); }
+  if (id === 'rword' && !exporting) { exporting = true; exportRecs(k); setTimeout(() => exporting = false, 1500); }
+});
+document.addEventListener('input', e => { if (e.target.id === 'rq') { rq[view] = e.target.value; $('#rlist').innerHTML = rList(view); } });
+document.addEventListener('change', e => { if (e.target.id === 'rsort') { rsort[view] = e.target.value; $('#rlist').innerHTML = rList(view); } });
+
 // ---------- start ----------
 sb.auth.onAuthStateChange((event, session) => {
   if (event === 'PASSWORD_RECOVERY') { authed = false; mode = 'recovery'; render(); return; }
   const was = authed;
   authed = !!session && mode !== 'recovery';
-  if (authed) { if (!was) view = 'home'; setTimeout(load, 0); }
+  if (authed) { if (!was) view = 'home'; setTimeout(() => { load(); loadRecs(); }, 0); }
   else { members = []; if (event === 'SIGNED_OUT') mode = 'login'; }
   render();
 });
